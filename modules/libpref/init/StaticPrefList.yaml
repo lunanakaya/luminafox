@@ -5951,6 +5951,11 @@
   value: true # Match naive behavior, but hopefully we can stop soon!
   mirror: always
 
+- name: gfx.compositor.clearstate
+  type: RelaxedAtomicBool
+  value: false
+  mirror: always
+
 # Whether GL contexts can be migrated to a different GPU (to match the one the
 # OS is using for composition).
 #
@@ -16739,6 +16744,19 @@
 #  *  2: remotely, no fallback
 #  * -1: locally, no fallback
 - name: widget.windows.utility_process_file_picker
+  type: RelaxedAtomicInt32
+  value: 0
+  mirror: always
+
+# Whether to apply a workaround intended to prevent Windows from treating
+# non-foreground-marked fullscreen windows as fullscreen on Windows 7 and
+# earlier. (See bug 1732517.)
+#
+# Valid values:
+#  * -1: the workaround is never used.
+#  *  1: the workaround is always used.
+#  *  0: the workaround is used if we think it should be. (Default.)
+- name: widget.windows.fullscreen_marking_workaround
   type: RelaxedAtomicInt32
   value: 0
   mirror: always

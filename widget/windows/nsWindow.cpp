@@ -207,6 +207,8 @@
 
 #include <d3d11.h>
 
+#include "InkCollector.h"
+
 // ERROR from wingdi.h (below) gets undefined by some code.
 // #define ERROR               0
 // #define RGN_ERROR ERROR
@@ -355,7 +357,8 @@ static void RegisterWindowClass(const wchar_t* aClassName, UINT aExtraStyle,
 // Global event hook for window cloaking. Never deregistered.
 //  - `Nothing` if not yet set.
 //  - `Some(nullptr)` if no attempt should be made to set it.
-static mozilla::Maybe<HWINEVENTHOOK> sWinCloakEventHook = Nothing();
+static mozilla::Maybe<HWINEVENTHOOK> sWinCloakEventHook =
+    IsWin8OrLater() ? Nothing() : Some(HWINEVENTHOOK(nullptr));
 static mozilla::LazyLogModule sCloakingLog("DWMCloaking");
 
 namespace mozilla {
@@ -474,6 +477,10 @@ class TIPMessageHandler {
   }
 
   static void Initialize() {
+    if (!IsWin8OrLater()) {
+      return;
+    }
+
     if (sInstance) {
       return;
     }
@@ -506,6 +513,16 @@ class TIPMessageHandler {
     mHook = ::SetWindowsHookEx(WH_GETMESSAGE, &TIPHook, nullptr,
                                ::GetCurrentThreadId());
     MOZ_ASSERT(mHook);
+
+    // On touchscreen devices, tiptsf.dll will have been loaded when STA COM was
+    // first initialized.
+    if (!IsWin10OrLater() && GetModuleHandle(L"tiptsf.dll") &&
+        !sProcessCaretEventsStub) {
+      sTipTsfInterceptor.Init("tiptsf.dll");
+      DebugOnly<bool> ok = sProcessCaretEventsStub.Set(
+          sTipTsfInterceptor, "ProcessCaretEvents", &ProcessCaretEventsHook);
+      MOZ_ASSERT(ok);
+    }
 
     if (!sSendMessageTimeoutWStub) {
       sUser32Intercept.Init("user32.dll");
@@ -553,6 +570,16 @@ class TIPMessageHandler {
     return ::CallNextHookEx(nullptr, aCode, aWParam, aLParam);
   }
 
+  static void CALLBACK ProcessCaretEventsHook(HWINEVENTHOOK aWinEventHook,
+                                              DWORD aEvent, HWND aHwnd,
+                                              LONG aObjectId, LONG aChildId,
+                                              DWORD aGeneratingTid,
+                                              DWORD aEventTime) {
+    A11yInstantiationBlocker block;
+    sProcessCaretEventsStub(aWinEventHook, aEvent, aHwnd, aObjectId, aChildId,
+                            aGeneratingTid, aEventTime);
+  }
+
   static LRESULT WINAPI SendMessageTimeoutWHook(HWND aHwnd, UINT aMsgCode,
                                                 WPARAM aWParam, LPARAM aLParam,
                                                 UINT aFlags, UINT aTimeout,
@@ -576,6 +603,9 @@ class TIPMessageHandler {
     return static_cast<LRESULT>(TRUE);
   }
 
+  static WindowsDllInterceptor sTipTsfInterceptor;
+  static WindowsDllInterceptor::FuncHookType<WINEVENTPROC>
+      sProcessCaretEventsStub;
   static WindowsDllInterceptor::FuncHookType<decltype(&SendMessageTimeoutW)>
       sSendMessageTimeoutWStub;
   static StaticAutoPtr<TIPMessageHandler> sInstance;
@@ -585,6 +615,9 @@ class TIPMessageHandler {
   uint32_t mA11yBlockCount;
 };
 
+WindowsDllInterceptor TIPMessageHandler::sTipTsfInterceptor;
+WindowsDllInterceptor::FuncHookType<WINEVENTPROC>
+    TIPMessageHandler::sProcessCaretEventsStub;
 WindowsDllInterceptor::FuncHookType<decltype(&SendMessageTimeoutW)>
     TIPMessageHandler::sSendMessageTimeoutWStub;
 StaticAutoPtr<TIPMessageHandler> TIPMessageHandler::sInstance;
@@ -703,6 +736,9 @@ nsWindow::nsWindow(bool aIsChildWindow)
     // Init theme data
     nsUXThemeData::UpdateNativeThemeInfo();
     RedirectedKeyDownMessageManager::Forget();
+    if (mPointerEvents.ShouldEnableInkCollector()) {
+      InkCollector::sInkCollector = new InkCollector();
+    }
   }  // !sInstanceCount
 
   sInstanceCount++;
@@ -727,6 +763,10 @@ nsWindow::~nsWindow() {
 
   // Global shutdown
   if (sInstanceCount == 0) {
+    if (InkCollector::sInkCollector) {
+      InkCollector::sInkCollector->Shutdown();
+      InkCollector::sInkCollector = nullptr;
+    }
     IMEHandler::Terminate();
     sCurrentCursor = {};
     if (sIsOleInitialized) {
@@ -814,6 +854,13 @@ void nsWindow::RecreateDirectManipulationIfNeeded() {
     return;
   }
 
+  if (!IsWin10OrLater()) {
+    // Chrome source said the Windows Direct Manipulation implementation had
+    // important bugs until Windows 10 (although IE on Windows 8.1 seems to use
+    // Direct Manipulation).
+    return;
+  }
+
   mDmOwner = MakeUnique<DirectManipulationOwner>(this);
 
   LayoutDeviceIntRect bounds(mBounds.X(), mBounds.Y(), mBounds.Width(),
@@ -882,9 +929,23 @@ nsresult nsWindow::Create(nsIWidget* aParent, nsNativeWidget aNativeParent,
   DWORD style = WindowStyle();
   DWORD extendedStyle = WindowExStyle();
 
+  // When window is PiP window on Windows7, WS_EX_COMPOSITED is set to suppress
+  // flickering during resizing with hardware acceleration.
+  bool isPIPWindow = aInitData && aInitData->mPIPWindow;
+  if (isPIPWindow && !IsWin8OrLater() &&
+      gfxConfig::IsEnabled(gfx::Feature::HW_COMPOSITING) &&
+      WidgetTypeSupportsAcceleration()) {
+    extendedStyle |= WS_EX_COMPOSITED;
+  }
+
   if (mWindowType == WindowType::Popup) {
     if (!aParent) {
       parent = nullptr;
+    }
+
+    if (!IsWin8OrLater() && HasBogusPopupsDropShadowOnMultiMonitor() &&
+        ShouldUseOffMainThreadCompositing()) {
+      extendedStyle |= WS_EX_COMPOSITED;
     }
   } else if (mWindowType == WindowType::Invisible) {
     // Make sure CreateWindowEx succeeds at creating a toplevel window
@@ -1563,6 +1624,29 @@ void nsWindow::Show(bool bState) {
 
   if (mWindowType == WindowType::Popup) {
     MOZ_ASSERT(ChooseWindowClass(mWindowType) == kClassNameDropShadow);
+    const bool shouldUseDropShadow = [&] {
+      if (mTransparencyMode == TransparencyMode::Transparent) {
+        return false;
+      }
+      if (HasBogusPopupsDropShadowOnMultiMonitor() &&
+          WinUtils::GetMonitorCount() > 1 &&
+          !gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
+        // See bug 603793. When we try to draw D3D9/10 windows with a drop
+        // shadow without the DWM on a secondary monitor, windows fails to
+        // composite our windows correctly. We therefor switch off the drop
+        // shadow for pop-up windows when the DWM is disabled and two monitors
+        // are connected.
+        return false;
+      }
+      return true;
+    }();
+
+    static bool sShadowEnabled = true;
+    if (sShadowEnabled != shouldUseDropShadow) {
+      ::SetClassLongA(mWnd, GCL_STYLE, shouldUseDropShadow ? CS_DROPSHADOW : 0);
+      sShadowEnabled = shouldUseDropShadow;
+    }
+
     // WS_EX_COMPOSITED conflicts with the WS_EX_LAYERED style and causes
     // some popup menus to become invisible.
     LONG_PTR exStyle = ::GetWindowLongPtrW(mWnd, GWL_EXSTYLE);
@@ -1690,6 +1774,26 @@ void nsWindow::Show(bool bState) {
 //
 // This does not take cloaking into account.
 bool nsWindow::IsVisible() const { return mIsVisible; }
+
+/**************************************************************
+ *
+ * SECTION: Window clipping utilities
+ *
+ * Used in Size and Move operations for setting the proper
+ * window clipping regions for window transparency.
+ *
+ **************************************************************/
+
+// XP and Vista visual styles sometimes require window clipping regions to be
+// applied for proper transparency. These routines are called on size and move
+// operations.
+// XXX this is apparently still needed in Windows 7 and later
+void nsWindow::ClearThemeRegion() {
+  if (mWindowType == WindowType::Popup &&
+      (mPopupType == PopupType::Tooltip || mPopupType == PopupType::Panel)) {
+    SetWindowRgn(mWnd, nullptr, false);
+  }
+}
 
 /**************************************************************
  *
@@ -1865,6 +1969,8 @@ void nsWindow::Move(double aX, double aY) {
       pl.rcNormalPosition.bottom += deltaY;
       VERIFY(::SetWindowPlacement(mWnd, &pl));
     } else {
+      ClearThemeRegion();
+
       UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE;
       double oldScale = mDefaultScale;
       mResizeState = IN_SIZEMOVE;
@@ -1929,6 +2035,7 @@ void nsWindow::Resize(double aWidth, double aHeight, bool aRepaint) {
         flags |= SWP_NOREDRAW;
       }
 
+      ClearThemeRegion();
       double oldScale = mDefaultScale;
       mResizeState = RESIZING;
       VERIFY(
@@ -2006,6 +2113,8 @@ void nsWindow::Resize(double aX, double aY, double aWidth, double aHeight,
       if (!aRepaint) {
         flags |= SWP_NOREDRAW;
       }
+
+      ClearThemeRegion();
 
       double oldScale = mDefaultScale;
       mResizeState = RESIZING;
@@ -2469,6 +2578,9 @@ void nsWindow::ResetLayout() {
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 
 void nsWindow::UpdateDarkModeToolbar() {
+  if (!IsWin10OrLater()) {
+    return;
+  }
   PreferenceSheet::EnsureInitialized();
   BOOL dark = PreferenceSheet::ColorSchemeForChrome() == ColorScheme::Dark;
   DwmSetWindowAttribute(mWnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &dark,
@@ -2478,6 +2590,8 @@ void nsWindow::UpdateDarkModeToolbar() {
 }
 
 LayoutDeviceIntMargin nsWindow::NormalWindowNonClientOffset() const {
+  bool glass = gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled();
+
   LayoutDeviceIntMargin nonClientOffset;
 
   // We're dealing with a "normal" window (not maximized, minimized, or
@@ -2488,7 +2602,7 @@ LayoutDeviceIntMargin nsWindow::NormalWindowNonClientOffset() const {
   // frame intact.  Setting it to a value greater than 0 reduces the frame
   // size by that amount.
 
-  if (mNonClientMargins.top > 0) {
+  if (mNonClientMargins.top > 0 && glass) {
     nonClientOffset.top = std::min(mCaptionHeight, mNonClientMargins.top);
   } else if (mNonClientMargins.top == 0) {
     nonClientOffset.top = mCaptionHeight;
@@ -2496,7 +2610,7 @@ LayoutDeviceIntMargin nsWindow::NormalWindowNonClientOffset() const {
     nonClientOffset.top = 0;
   }
 
-  if (mNonClientMargins.bottom > 0) {
+  if (mNonClientMargins.bottom > 0 && glass) {
     nonClientOffset.bottom =
         std::min(mVertResizeMargin, mNonClientMargins.bottom);
   } else if (mNonClientMargins.bottom == 0) {
@@ -2505,7 +2619,7 @@ LayoutDeviceIntMargin nsWindow::NormalWindowNonClientOffset() const {
     nonClientOffset.bottom = 0;
   }
 
-  if (mNonClientMargins.left > 0) {
+  if (mNonClientMargins.left > 0 && glass) {
     nonClientOffset.left = std::min(mHorResizeMargin, mNonClientMargins.left);
   } else if (mNonClientMargins.left == 0) {
     nonClientOffset.left = mHorResizeMargin;
@@ -2513,7 +2627,7 @@ LayoutDeviceIntMargin nsWindow::NormalWindowNonClientOffset() const {
     nonClientOffset.left = 0;
   }
 
-  if (mNonClientMargins.right > 0) {
+  if (mNonClientMargins.right > 0 && glass) {
     nonClientOffset.right = std::min(mHorResizeMargin, mNonClientMargins.right);
   } else if (mNonClientMargins.right == 0) {
     nonClientOffset.right = mHorResizeMargin;
@@ -2646,12 +2760,14 @@ bool nsWindow::UpdateNonClientMargins(bool aReflowWindow) {
         mNonClientOffset.bottom -= kHiddenTaskbarSize;
       }
 
-      // When we are drawing the non-client region, we need
+      // On Windows 10+, when we are drawing the non-client region, we need
       // to clear the portion of the NC region that is exposed by the
       // hidden taskbar.  As above, we clear the bottom of the NC region
       // when the taskbar is at the top of the screen.
-      UINT clearEdge = (edge == ABE_TOP) ? ABE_BOTTOM : edge;
-      mClearNCEdge = Some(clearEdge);
+      if (IsWin10OrLater()) {
+        UINT clearEdge = (edge == ABE_TOP) ? ABE_BOTTOM : edge;
+        mClearNCEdge = Some(clearEdge);
+      }
     }
   } else {
     mNonClientOffset = NormalWindowNonClientOffset();
@@ -2747,6 +2863,23 @@ void nsWindow::InvalidateNonClientRegion() {
   // triggers ncpaint and paint events for the two areas
   RedrawWindow(mWnd, nullptr, winRgn, RDW_FRAME | RDW_INVALIDATE);
   DeleteObject(winRgn);
+}
+
+HRGN nsWindow::ExcludeNonClientFromPaintRegion(HRGN aRegion) {
+  RECT rect;
+  HRGN rgn = nullptr;
+  if (aRegion == (HRGN)1) {  // undocumented value indicating a full refresh
+    GetWindowRect(mWnd, &rect);
+    rgn = CreateRectRgnIndirect(&rect);
+  } else {
+    rgn = aRegion;
+  }
+  GetClientRect(mWnd, &rect);
+  MapWindowPoints(mWnd, nullptr, (LPPOINT)&rect, 2);
+  HRGN nonClientRgn = CreateRectRgnIndirect(&rect);
+  CombineRgn(rgn, rgn, nonClientRgn, RGN_DIFF);
+  DeleteObject(nonClientRgn);
+  return rgn;
 }
 
 /**************************************************************
@@ -2971,6 +3104,13 @@ void nsWindow::SetTransparencyMode(TransparencyMode aMode) {
   MOZ_ASSERT(window);
 
   if (!window || window->DestroyCalled()) {
+    return;
+  }
+
+  if (WindowType::TopLevel == window->mWindowType &&
+      mTransparencyMode != aMode &&
+      !gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
+    NS_WARNING("Cannot set transparency mode on top-level windows.");
     return;
   }
 
@@ -3257,6 +3397,13 @@ NS_IMPL_ISUPPORTS0(FullscreenTransitionData)
 
 /* virtual */
 bool nsWindow::PrepareForFullscreenTransition(nsISupports** aData) {
+  // We don't support fullscreen transition when composition is not
+  // enabled, which could make the transition broken and annoying.
+  // See bug 1184201.
+  if (!gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
+    return false;
+  }
+
   FullscreenTransitionInitData initData;
   nsCOMPtr<nsIScreen> screen = GetWidgetScreen();
   const DesktopIntRect rect = screen->GetRectDisplayPix();
@@ -4201,6 +4348,17 @@ bool nsWindow::DispatchMouseEvent(EventMessage aEventMessage, WPARAM wParam,
   uint32_t pointerId =
       aPointerInfo ? aPointerInfo->pointerId : MOUSE_POINTERID();
 
+  // Since it is unclear whether a user will use the digitizer,
+  // Postpone initialization until first PEN message will be found.
+  if (MouseEvent_Binding::MOZ_SOURCE_PEN == aInputSource
+      // Messages should be only at topLevel window.
+      && WindowType::TopLevel == mWindowType
+      // Currently this scheme is used only when pointer events is enabled.
+      && InkCollector::sInkCollector) {
+    InkCollector::sInkCollector->SetTarget(mWnd);
+    InkCollector::sInkCollector->SetPointerId(pointerId);
+  }
+
   switch (aEventMessage) {
     case eMouseDown:
       CaptureMouse(true);
@@ -5112,7 +5270,9 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
        * sending the message with an updated title
        */
 
-      if (mSendingSetText || !mCustomNonClient || mNonClientMargins.top == -1)
+      if ((mSendingSetText &&
+           gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) ||
+          !mCustomNonClient || mNonClientMargins.top == -1)
         break;
 
       {
@@ -5148,14 +5308,17 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
       }
 
       // There is a case that rendered result is not kept. Bug 1237617
-      if (wParam == TRUE && !gfxEnv::MOZ_DISABLE_FORCE_PRESENT()) {
+      if (wParam == TRUE && !gfxEnv::MOZ_DISABLE_FORCE_PRESENT() &&
+          gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
         NS_DispatchToMainThread(NewRunnableMethod(
             "nsWindow::ForcePresent", this, &nsWindow::ForcePresent));
       }
 
       // let the dwm handle nc painting on glass
       // Never allow native painting if we are on fullscreen
-      if (mFrameState->GetSizeMode() != nsSizeMode_Fullscreen) break;
+      if (mFrameState->GetSizeMode() != nsSizeMode_Fullscreen &&
+          gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled())
+        break;
 
       if (wParam == TRUE) {
         // going active
@@ -5180,6 +5343,24 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
        * do seem to always send a WM_NCPAINT message, so let's update on that.
        */
       gfxDWriteFont::UpdateSystemTextVars();
+
+      /*
+       * Reset the non-client paint region so that it excludes the
+       * non-client areas we paint manually. Then call defwndproc
+       * to do the actual painting.
+       */
+
+      if (!mCustomNonClient) break;
+
+      // let the dwm handle nc painting on glass
+      if (gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) break;
+
+      HRGN paintRgn = ExcludeNonClientFromPaintRegion((HRGN)wParam);
+      LRESULT res = CallWindowProcW(GetPrevWindowProc(), mWnd, msg,
+                                    (WPARAM)paintRgn, lParam);
+      if (paintRgn != (HRGN)wParam) DeleteObject(paintRgn);
+      *aRetValue = res;
+      result = true;
     } break;
 
     case WM_POWERBROADCAST:
@@ -5371,6 +5552,21 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
       LPARAM pos = lParamToClient(::GetMessagePos());
       DispatchMouseEvent(eMouseExitFromWidget, mouseState, pos, false,
                          MouseButton::ePrimary, MOUSE_INPUT_SOURCE());
+    } break;
+
+    case MOZ_WM_PEN_LEAVES_HOVER_OF_DIGITIZER: {
+      LPARAM pos = lParamToClient(::GetMessagePos());
+      MOZ_ASSERT(InkCollector::sInkCollector);
+      uint16_t pointerId = InkCollector::sInkCollector->GetPointerId();
+      if (pointerId != 0) {
+        WinPointerInfo pointerInfo;
+        pointerInfo.pointerId = pointerId;
+        DispatchMouseEvent(eMouseExitFromWidget, wParam, pos, false,
+                           MouseButton::ePrimary,
+                           MouseEvent_Binding::MOZ_SOURCE_PEN, &pointerInfo);
+        InkCollector::sInkCollector->ClearTarget();
+        InkCollector::sInkCollector->ClearPointerId();
+      }
     } break;
 
     case WM_CONTEXTMENU: {
@@ -5905,6 +6101,26 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
       }
     } break;
 
+    case WM_DWMCOMPOSITIONCHANGED:
+      // Every window will get this message, but gfxVars only broadcasts
+      // updates when the value actually changes
+      if (XRE_IsParentProcess()) {
+        BOOL dwmEnabled = FALSE;
+        if (FAILED(::DwmIsCompositionEnabled(&dwmEnabled)) || !dwmEnabled) {
+          gfxVars::SetDwmCompositionEnabled(false);
+        } else {
+          gfxVars::SetDwmCompositionEnabled(true);
+        }
+      }
+
+      UpdateNonClientMargins();
+      BroadcastMsg(mWnd, WM_DWMCOMPOSITIONCHANGED);
+      // TODO: Why is NotifyThemeChanged needed, what does it affect? And can we
+      // make it more granular by tweaking the ChangeKind we pass?
+      NotifyThemeChanged(widget::ThemeChangeKind::StyleAndLayout);
+      Invalidate(true, true, true);
+      break;
+
     case WM_DPICHANGED: {
       LPRECT rect = (LPRECT)lParam;
       OnDPIChanged(rect->left, rect->top, rect->right - rect->left,
@@ -6050,6 +6266,35 @@ void nsWindow::FinishLiveResizing(ResizeState aNewState) {
   }
   mResizeState = aNewState;
   ForcePresent();
+}
+
+/**************************************************************
+ *
+ * SECTION: Broadcast messaging
+ *
+ * Broadcast messages to all windows.
+ *
+ **************************************************************/
+
+// Enumerate all child windows sending aMsg to each of them
+BOOL CALLBACK nsWindow::BroadcastMsgToChildren(HWND aWnd, LPARAM aMsg) {
+  WNDPROC winProc = (WNDPROC)::GetWindowLongPtrW(aWnd, GWLP_WNDPROC);
+  if (winProc == &nsWindow::WindowProc) {
+    // it's one of our windows so go ahead and send a message to it
+    ::CallWindowProcW(winProc, aWnd, aMsg, 0, 0);
+  }
+  return TRUE;
+}
+
+// Enumerate all top level windows specifying that the children of each
+// top level window should be enumerated. Do *not* send the message to
+// each top level window since it is assumed that the toolkit will send
+// aMsg to them directly.
+BOOL CALLBACK nsWindow::BroadcastMsg(HWND aTopWindow, LPARAM aMsg) {
+  // Iterate each of aTopWindows child windows sending the aMsg
+  // to each of them.
+  ::EnumChildWindows(aTopWindow, nsWindow::BroadcastMsgToChildren, aMsg);
+  return TRUE;
 }
 
 /**************************************************************
@@ -7152,6 +7397,37 @@ void nsWindow::WindowUsesOMTC() {
   NS_WARNING_ASSERTION(result, "Could not reset window class style");
 }
 
+// See bug 603793
+bool nsWindow::HasBogusPopupsDropShadowOnMultiMonitor() {
+  static const bool sHasBogusPopupsDropShadowOnMultiMonitor = [] {
+    // Since any change in the preferences requires a restart, this can be
+    // done just once.
+    // Check for Direct2D first.
+    if (gfxWindowsPlatform::GetPlatform()->IsDirect2DBackend()) {
+      return true;
+    }
+    // Otherwise check if Direct3D 9 may be used.
+    if (gfxConfig::IsEnabled(gfx::Feature::HW_COMPOSITING) &&
+        !gfxConfig::IsEnabled(gfx::Feature::OPENGL_COMPOSITING)) {
+      nsCOMPtr<nsIGfxInfo> gfxInfo = components::GfxInfo::Service();
+      if (gfxInfo) {
+        int32_t status;
+        nsCString discardFailureId;
+        if (NS_SUCCEEDED(
+                gfxInfo->GetFeatureStatus(nsIGfxInfo::FEATURE_DIRECT3D_9_LAYERS,
+                                          discardFailureId, &status))) {
+          if (status == nsIGfxInfo::FEATURE_STATUS_OK ||
+              gfxConfig::IsForcedOnByUser(gfx::Feature::HW_COMPOSITING)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }();
+  return sHasBogusPopupsDropShadowOnMultiMonitor;
+}
+
 void nsWindow::OnDPIChanged(int32_t x, int32_t y, int32_t width,
                             int32_t height) {
   // Don't try to handle WM_DPICHANGED for popup windows (see bug 1239353);
@@ -7195,6 +7471,7 @@ void nsWindow::OnDPIChanged(int32_t x, int32_t y, int32_t width,
 /* static */
 void nsWindow::OnCloakEvent(HWND aWnd, bool aCloaked) {
   MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(IsWin8OrLater());
 
   const char* const kEventName = aCloaked ? "CLOAKED" : "UNCLOAKED";
   nsWindow* pWin = WinUtils::GetNSWindowPtr(aWnd);
@@ -8402,7 +8679,9 @@ void nsWindow::GetCompositorWidgetInitData(
       mTransparencyMode, mFrameState->GetSizeMode());
 }
 
-bool nsWindow::SynchronouslyRepaintOnResize() { return false; }
+bool nsWindow::SynchronouslyRepaintOnResize() {
+  return !gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled();
+}
 
 void nsWindow::MaybeDispatchInitialFocusEvent() {
   if (mIsShowingPreXULSkeletonUI && ::GetActiveWindow() == mWnd) {
@@ -8760,6 +9039,25 @@ nsresult nsWindow::RestoreHiDPIMode() { return WinUtils::RestoreHiDPIMode(); }
 mozilla::Maybe<UINT> nsWindow::GetHiddenTaskbarEdge() {
   HMONITOR windowMonitor = ::MonitorFromWindow(mWnd, MONITOR_DEFAULTTONEAREST);
 
+  if (!IsWin8OrLater()) {
+    // Per-monitor taskbar information is not available.
+    APPBARDATA appBarData;
+    appBarData.cbSize = sizeof(appBarData);
+    UINT taskbarState = SHAppBarMessage(ABM_GETSTATE, &appBarData);
+    if (ABS_AUTOHIDE & taskbarState) {
+      appBarData.hWnd = FindWindow(L"Shell_TrayWnd", nullptr);
+      if (appBarData.hWnd) {
+        HMONITOR taskbarMonitor =
+            ::MonitorFromWindow(appBarData.hWnd, MONITOR_DEFAULTTOPRIMARY);
+        if (taskbarMonitor == windowMonitor) {
+          SHAppBarMessage(ABM_GETTASKBARPOS, &appBarData);
+          return Some(appBarData.uEdge);
+        }
+      }
+    }
+    return Nothing();
+  }
+
   // Check all four sides of our monitor for an appbar.  Skip any that aren't
   // the system taskbar.
   MONITORINFO mi;
@@ -8860,7 +9158,8 @@ void nsWindow::FrameState::EnsureSizeMode(nsSizeMode aMode,
     return;
   }
 
-  if (StaticPrefs::widget_windows_fullscreen_remind_taskbar()) {
+  if (::IsWin10OrLater() &&
+      StaticPrefs::widget_windows_fullscreen_remind_taskbar()) {
     // If we're unminimizing a window, asynchronously notify the taskbar after
     // the message has been processed. This redundant notification works around
     // a race condition in explorer.exe. (See bug 1835851, or comments in
