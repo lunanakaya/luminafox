@@ -17,6 +17,10 @@
 #include "mozilla/Telemetry.h"
 #include "mozilla/widget/WinRegistry.h"
 
+// -- native controls patch includes --
+#include "mozilla/StaticPrefs_widget.h"
+// -- end native controls patch includes --
+
 using namespace mozilla;
 using namespace mozilla::widget;
 
@@ -93,7 +97,10 @@ void nsLookAndFeel::RefreshImpl() {
 }
 
 static bool UseNonNativeMenuColors(ColorScheme aScheme) {
-  return !LookAndFeel::GetInt(LookAndFeel::IntID::UseAccessibilityTheme) ||
+  if (!LookAndFeel::WindowsNonNativeMenusEnabled()) {
+    return false;
+  }
+  return LookAndFeel::GetInt(LookAndFeel::IntID::WindowsDefaultTheme) ||
          aScheme == ColorScheme::Dark;
 }
 
@@ -130,6 +137,9 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
         if (UseNonNativeMenuColors(aScheme)) {
           return false;
         }
+        if (!nsUXThemeData::IsAppThemed()) {
+          return nsUXThemeData::AreFlatMenusEnabled();
+        }
         [[fallthrough]];
       case ColorID::MozMenuhovertext:
         if (UseNonNativeMenuColors(aScheme)) {
@@ -143,6 +153,7 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
         return aScheme != ColorScheme::Dark || mDarkHighlightText;
       case ColorID::IMESelectedRawTextForeground:
       case ColorID::IMESelectedConvertedTextForeground:
+      case ColorID::MozDragtargetzone:
         return true;
       default:
         return false;
@@ -260,6 +271,10 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
         aColor = kNonNativeMenuText;
         return NS_OK;
       }
+      if (!nsUXThemeData::IsAppThemed()) {
+        idx = COLOR_MENUTEXT;
+        break;
+      }
       [[fallthrough]];
     case ColorID::MozMenuhovertext:
       if (UseNonNativeMenuColors(aScheme)) {
@@ -364,6 +379,22 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
     case ColorID::MozColheaderactivetext:
       idx = COLOR_WINDOWTEXT;
       break;
+    case ColorID::MozWinMediatext:
+      if (mColorMediaText) {
+        aColor = *mColorMediaText;
+        return NS_OK;
+      }
+      // if we've gotten here just return -moz-dialogtext instead
+      idx = COLOR_WINDOWTEXT;
+      break;
+    case ColorID::MozWinCommunicationstext:
+      if (mColorCommunicationsText) {
+        aColor = *mColorCommunicationsText;
+        return NS_OK;
+      }
+      // if we've gotten here just return -moz-dialogtext instead
+      idx = COLOR_WINDOWTEXT;
+      break;
     case ColorID::MozNativehyperlinktext:
       idx = COLOR_HOTLIGHT;
       break;
@@ -462,9 +493,41 @@ nsresult nsLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
     case IntID::TreeScrollLinesMax:
       aResult = 3;
       break;
+    case IntID::WindowsClassic:
+      aResult = !nsUXThemeData::IsAppThemed();
+      break;
+    case IntID::WindowsDefaultTheme:
+      aResult = nsUXThemeData::IsDefaultWindowTheme();
+      break;
+    case IntID::DWMCompositor:
+      if (StaticPrefs::widget_ev_native_controls_patch_force_dwm_report_off()) {
+        aResult = 0;
+        break;
+      }
+
+      aResult = gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled();
+      break;
     case IntID::WindowsAccentColorInTitlebar: {
       aResult = mTitlebarColors.mUseAccent;
     } break;
+    case IntID::WindowsGlass: {
+      int reportingPref =
+          StaticPrefs::widget_ev_native_controls_patch_force_glass_reporting();
+      if (reportingPref != 0) {
+        aResult = (reportingPref == 1) ? 1 : 0;
+        break;
+      }
+
+      int overrideWinVer =
+          StaticPrefs::widget_ev_native_controls_patch_override_win_version();
+      bool isWin8OrLater =
+          (overrideWinVer == 0 && IsWin8OrLater()) || overrideWinVer >= 8;
+
+      // Aero Glass is only available prior to Windows 8 when DWM is used.
+      aResult = (gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled() &&
+                 !isWin8OrLater);
+      break;
+    }
     case IntID::AlertNotificationOrigin:
       aResult = 0;
       {
@@ -877,8 +940,14 @@ void nsLookAndFeel::EnsureInit() {
   }
   mInitialized = true;
 
-  mColorMenuHoverText =
-      ::GetColorFromTheme(eUXMenu, MENU_POPUPITEM, MPI_HOT, TMT_TEXTCOLOR);
+  if (nsUXThemeData::IsAppThemed()) {
+    mColorMenuHoverText =
+        ::GetColorFromTheme(eUXMenu, MENU_POPUPITEM, MPI_HOT, TMT_TEXTCOLOR);
+    mColorMediaText = ::GetColorFromTheme(eUXMediaToolbar, TP_BUTTON, TS_NORMAL,
+                                          TMT_TEXTCOLOR);
+    mColorCommunicationsText = ::GetColorFromTheme(
+        eUXCommunicationsToolbar, TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR);
+  }
 
   // Fill out the sys color table.
   for (int i = SYS_COLOR_MIN; i <= SYS_COLOR_MAX; ++i) {

@@ -195,6 +195,14 @@ bool nsNativeThemeGTK::GetGtkWidgetAndState(StyleAppearance aAppearance,
         aAppearance == StyleAppearance::Menulist ||
         aAppearance == StyleAppearance::MenulistButton) {
       aState->active &= aState->inHover;
+    } else if (aAppearance == StyleAppearance::Treetwisty ||
+               aAppearance == StyleAppearance::Treetwistyopen) {
+      if (nsTreeBodyFrame* treeBodyFrame = do_QueryFrame(aFrame)) {
+        const mozilla::AtomArray& atoms =
+            treeBodyFrame->GetPropertyArrayForCurrentDrawingItem();
+        aState->selected = atoms.Contains(nsGkAtoms::selected);
+        aState->inHover = atoms.Contains(nsGkAtoms::hover);
+      }
     }
 
     if (IsFrameContentNodeInNamespace(aFrame, kNameSpaceID_XUL)) {
@@ -292,7 +300,16 @@ bool nsNativeThemeGTK::GetGtkWidgetAndState(StyleAppearance aAppearance,
       aGtkWidgetType = MOZ_GTK_TEXT_VIEW;
       break;
     case StyleAppearance::Listbox:
+    case StyleAppearance::Treeview:
       aGtkWidgetType = MOZ_GTK_TREEVIEW;
+      break;
+    case StyleAppearance::Treetwisty:
+      aGtkWidgetType = MOZ_GTK_TREEVIEW_EXPANDER;
+      if (aWidgetFlags) *aWidgetFlags = GTK_EXPANDER_COLLAPSED;
+      break;
+    case StyleAppearance::Treetwistyopen:
+      aGtkWidgetType = MOZ_GTK_TREEVIEW_EXPANDER;
+      if (aWidgetFlags) *aWidgetFlags = GTK_EXPANDER_EXPANDED;
       break;
     case StyleAppearance::MenulistButton:
     case StyleAppearance::Menulist:
@@ -859,13 +876,14 @@ CSSIntMargin nsNativeThemeGTK::GetCachedWidgetBorder(
 
 LayoutDeviceIntMargin nsNativeThemeGTK::GetWidgetBorder(
     nsDeviceContext* aContext, nsIFrame* aFrame, StyleAppearance aAppearance) {
-  if (IsWidgetAlwaysNonNative(aFrame, aAppearance)) {
-    return Theme::GetWidgetBorder(aContext, aFrame, aAppearance);
-  }
-
   CSSIntMargin result;
   GtkTextDirection direction = GetTextDirection(aFrame);
   switch (aAppearance) {
+    case StyleAppearance::Toolbox:
+      // gtk has no toolbox equivalent.  So, although we map toolbox to
+      // gtk's 'toolbar' for purposes of painting the widget background,
+      // we don't use the toolbar border for toolbox.
+      break;
     case StyleAppearance::Dualbutton:
       // TOOLBAR_DUAL_BUTTON is an interesting case.  We want a border to draw
       // around the entire button + dropdown, and also an inner border if you're
@@ -898,9 +916,6 @@ bool nsNativeThemeGTK::GetWidgetPadding(nsDeviceContext* aContext,
                                         nsIFrame* aFrame,
                                         StyleAppearance aAppearance,
                                         LayoutDeviceIntMargin* aResult) {
-  if (IsWidgetAlwaysNonNative(aFrame, aAppearance)) {
-    return Theme::GetWidgetPadding(aContext, aFrame, aAppearance, aResult);
-  }
   switch (aAppearance) {
     case StyleAppearance::Toolbarbutton:
     case StyleAppearance::Tooltip:
@@ -950,7 +965,8 @@ bool nsNativeThemeGTK::GetWidgetOverflow(nsDeviceContext* aContext,
 auto nsNativeThemeGTK::IsWidgetNonNative(nsIFrame* aFrame,
                                          StyleAppearance aAppearance)
     -> NonNative {
-  if (IsWidgetAlwaysNonNative(aFrame, aAppearance)) {
+  if (IsWidgetScrollbarPart(aAppearance) ||
+      aAppearance == StyleAppearance::FocusOutline) {
     return NonNative::Always;
   }
 
@@ -993,7 +1009,7 @@ bool nsNativeThemeGTK::IsWidgetAlwaysNonNative(nsIFrame* aFrame,
 LayoutDeviceIntSize nsNativeThemeGTK::GetMinimumWidgetSize(
     nsPresContext* aPresContext, nsIFrame* aFrame,
     StyleAppearance aAppearance) {
-  if (IsWidgetAlwaysNonNative(aFrame, aAppearance)) {
+  if (IsWidgetNonNative(aFrame, aAppearance) == NonNative::Always) {
     return Theme::GetMinimumWidgetSize(aPresContext, aFrame, aAppearance);
   }
 
@@ -1120,6 +1136,12 @@ LayoutDeviceIntSize nsNativeThemeGTK::GetMinimumWidgetSize(
       result.width = 14;
       result.height = 13;
       break;
+    case StyleAppearance::Treetwisty:
+    case StyleAppearance::Treetwistyopen: {
+      gint expander_size;
+      moz_gtk_get_treeview_expander_size(&expander_size);
+      result.width = result.height = expander_size;
+    } break;
     default:
       break;
   }
@@ -1141,7 +1163,9 @@ nsNativeThemeGTK::WidgetStateChanged(nsIFrame* aFrame,
   }
 
   // Some widget types just never change state.
-  if (aAppearance == StyleAppearance::Progresschunk ||
+  if (aAppearance == StyleAppearance::Toolbox ||
+      aAppearance == StyleAppearance::Toolbar ||
+      aAppearance == StyleAppearance::Progresschunk ||
       aAppearance == StyleAppearance::ProgressBar ||
       aAppearance == StyleAppearance::Tooltip ||
       aAppearance == StyleAppearance::MozWindowDecorations) {
@@ -1198,7 +1222,7 @@ nsNativeThemeGTK::ThemeSupportsWidget(nsPresContext* aPresContext,
     return false;
   }
 
-  if (IsWidgetAlwaysNonNative(aFrame, aAppearance)) {
+  if (IsWidgetNonNative(aFrame, aAppearance) == NonNative::Always) {
     return Theme::ThemeSupportsWidget(aPresContext, aFrame, aAppearance);
   }
 
@@ -1214,6 +1238,7 @@ nsNativeThemeGTK::ThemeSupportsWidget(nsPresContext* aPresContext,
     case StyleAppearance::Button:
     case StyleAppearance::Radio:
     case StyleAppearance::Checkbox:
+    case StyleAppearance::Toolbox:  // N/A
     case StyleAppearance::Toolbarbutton:
     case StyleAppearance::Dualbutton:  // so we can override the border with 0
     case StyleAppearance::ToolbarbuttonDropdown:
@@ -1222,6 +1247,12 @@ nsNativeThemeGTK::ThemeSupportsWidget(nsPresContext* aPresContext,
     case StyleAppearance::ButtonArrowNext:
     case StyleAppearance::ButtonArrowPrevious:
     case StyleAppearance::Listbox:
+    case StyleAppearance::Treeview:
+      // case StyleAppearance::Treeitem:
+    case StyleAppearance::Treetwisty:
+      // case StyleAppearance::Treeline:
+      // case StyleAppearance::Treeheader:
+    case StyleAppearance::Treetwistyopen:
     case StyleAppearance::ProgressBar:
     case StyleAppearance::Progresschunk:
     case StyleAppearance::Tab:

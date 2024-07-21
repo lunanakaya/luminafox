@@ -97,7 +97,6 @@ bool WebRenderLayerManager::Initialize(
   }
 
   mWrChild = static_cast<WebRenderBridgeChild*>(bridge);
-  mHasFlushedThisChild = false;
 
   TextureFactoryIdentifier textureFactoryIdentifier;
   wr::MaybeIdNamespace idNamespace;
@@ -380,6 +379,13 @@ void WebRenderLayerManager::EndTransactionWithoutLayer(
       builderDumpIndex =
           mDLBuilder->Dump(/*indent*/ 1, Some(builderDumpIndex), Nothing());
     }
+  }
+
+  mWidget->AddWindowOverlayWebRenderCommands(WrBridge(), *mDLBuilder,
+                                             resourceUpdates);
+  if (dumpEnabled) {
+    printf_stderr("(window overlay)\n");
+    Unused << mDLBuilder->Dump(/*indent*/ 1, Some(builderDumpIndex), Nothing());
   }
 
   if (AsyncPanZoomEnabled()) {
@@ -696,30 +702,24 @@ void WebRenderLayerManager::FlushRendering(wr::RenderReasons aReasons) {
   }
   MOZ_ASSERT(mWidget);
 
-  // If widget bounds size is different from the last flush, consider
-  // this to be a resize. It's important to use GetClientSize here,
-  // because that has extra plumbing to support initial display cases
-  // where the widget doesn't yet have real bounds.
-  LayoutDeviceIntSize widgetSize = mWidget->GetClientSize();
-  bool resizing = widgetSize != mFlushWidgetSize;
-  mFlushWidgetSize = widgetSize;
+  // If value of IsResizingNativeWidget() is nothing, we assume that resizing
+  // might happen.
+  bool resizing = mWidget && mWidget->IsResizingNativeWidget().valueOr(true);
 
   if (resizing) {
     aReasons = aReasons | wr::RenderReasons::RESIZE;
   }
 
-  // Check for the conditions where we we force a sync flush. The first
-  // flush for this child should always be sync. Resizes should be
-  // sometimes be sync. Everything else can be async.
-  if (!mHasFlushedThisChild ||
-      (resizing && (mWidget->SynchronouslyRepaintOnResize() ||
-                    StaticPrefs::layers_force_synchronous_resize()))) {
+  // Limit async FlushRendering to !resizing and Win DComp.
+  // XXX relax the limitation
+  if (WrBridge()->GetCompositorUseDComp() && !resizing) {
+    cBridge->SendFlushRenderingAsync(aReasons);
+  } else if (mWidget->SynchronouslyRepaintOnResize() ||
+             StaticPrefs::layers_force_synchronous_resize()) {
     cBridge->SendFlushRendering(aReasons);
   } else {
     cBridge->SendFlushRenderingAsync(aReasons);
   }
-
-  mHasFlushedThisChild = true;
 }
 
 void WebRenderLayerManager::WaitOnTransactionProcessed() {

@@ -239,6 +239,8 @@ pub enum SystemColor {
     Canvas,
     MozDialog,
     MozDialogtext,
+    /// Used to highlight valid regions to drop something onto.
+    MozDragtargetzone,
     /// Used for selected but not focused cell backgrounds.
     #[parse(aliases = "-moz-html-cellhighlight")]
     MozCellhighlight,
@@ -263,6 +265,12 @@ pub enum SystemColor {
     /// Used for menubar item text when hovered.
     MozMenubarhovertext,
 
+    /// Colors used for the header bar (sorta like the tab bar / menubar).
+    MozHeaderbar,
+    MozHeaderbartext,
+    MozHeaderbarinactive,
+    MozHeaderbarinactivetext,
+
     /// On platforms where these colors are the same as -moz-field, use
     /// -moz-fieldtext as foreground color
     MozEventreerow,
@@ -279,17 +287,6 @@ pub enum SystemColor {
     /// Used for button background when disabled.
     #[parse(condition = "ParserContext::chrome_rules_enabled")]
     MozButtondisabledface,
-
-    /// Colors used for the header bar (sorta like the tab bar / menubar).
-    #[parse(condition = "ParserContext::chrome_rules_enabled")]
-    MozHeaderbar,
-    #[parse(condition = "ParserContext::chrome_rules_enabled")]
-    MozHeaderbartext,
-    #[parse(condition = "ParserContext::chrome_rules_enabled")]
-    MozHeaderbarinactive,
-    #[parse(condition = "ParserContext::chrome_rules_enabled")]
-    MozHeaderbarinactivetext,
-
     /// Foreground color of default buttons.
     #[parse(condition = "ParserContext::chrome_rules_enabled")]
     MozMacDefaultbuttontext,
@@ -320,6 +317,11 @@ pub enum SystemColor {
     /// The background-color for :autofill-ed inputs.
     #[parse(condition = "ParserContext::chrome_rules_enabled")]
     MozAutofillBackground,
+
+    /// Media rebar text.
+    MozWinMediatext,
+    /// Communications rebar text.
+    MozWinCommunicationstext,
 
     /// Hyperlink color extracted from the system, not affected by the browser.anchor_color user
     /// pref.

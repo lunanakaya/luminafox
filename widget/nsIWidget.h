@@ -778,6 +778,10 @@ class nsIWidget : public nsISupports {
   virtual void Resize(double aX, double aY, double aWidth, double aHeight,
                       bool aRepaint) = 0;
 
+  virtual mozilla::Maybe<bool> IsResizingNativeWidget() {
+    return mozilla::Nothing();
+  }
+
   /**
    * Resize the widget so that the inner client area has the given size.
    *
@@ -1213,6 +1217,14 @@ class nsIWidget : public nsISupports {
    * Always called on the main thread.
    */
   virtual void PrepareWindowEffects() = 0;
+
+  /**
+   * Called on the main thread at the end of WebRender display list building.
+   */
+  virtual void AddWindowOverlayWebRenderCommands(
+      mozilla::layers::WebRenderBridgeChild* aWrBridge,
+      mozilla::wr::DisplayListBuilder& aBuilder,
+      mozilla::wr::IpcResourceUpdateQueue& aResources) {}
 
   /**
    * Called when Gecko knows which themed widgets exist in this window.
