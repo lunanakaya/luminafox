@@ -556,12 +556,6 @@ extern "system" {
         lpLCData: LPSTR,
         cchData: c_int,
     ) -> c_int;
-    pub fn GetLocaleInfoEx(
-        lpLocaleName: LPCWSTR,
-        LCType: LCTYPE,
-        lpLCData: LPWSTR,
-        cchData: c_int,
-    ) -> c_int;
     pub fn GetLocaleInfoW(
         Locale: LCID,
         LCType: LCTYPE,
@@ -708,20 +702,11 @@ extern "system" {
         Locale: LCID,
         dwFlags: DWORD,
     ) -> BOOL;
-    pub fn IsValidLocaleName(
-        lpLocaleName: LPCWSTR,
-    ) -> BOOL;
     pub fn IsValidNLSVersion(
         function: NLS_FUNCTION,
         lpLocaleName: LPCWSTR,
         lpVersionInformation: LPNLSVERSIONINFOEX,
     ) -> BOOL;
-    pub fn LCIDToLocaleName(
-        Locale: LCID,
-        lpName: LPWSTR,
-        cchName: c_int,
-        dwFlags: DWORD,
-    ) -> c_int;
     pub fn LCMapStringA(
         Locale: LCID,
         dwMapFlags: DWORD,
@@ -749,10 +734,6 @@ extern "system" {
         lpDestStr: LPWSTR,
         cchDest: c_int,
     ) -> c_int;
-    pub fn LocaleNameToLCID(
-        lpName: LPCWSTR,
-        dwFlags: DWORD,
-    ) -> LCID;
     pub fn NormalizeString(
         NormForm: NORM_FORM,
         lpSrcString: LPCWSTR,

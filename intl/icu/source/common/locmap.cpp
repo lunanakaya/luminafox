@@ -1059,7 +1059,7 @@ uprv_convertToPosix(uint32_t hostid, char *posixID, int32_t posixIDCapacity, UEr
 #if U_PLATFORM_HAS_WIN32_API && UCONFIG_USE_WINDOWS_LCID_MAPPING_API
     static_assert(ULOC_FULLNAME_CAPACITY > LOCALE_NAME_MAX_LENGTH, "Windows locale names have smaller length than ICU locale names.");
 
-    char locName[LOCALE_NAME_MAX_LENGTH] = {};
+    char locName[157];  /* ULOC_FULLNAME_CAPACITY */
 
     // Note: Windows primary lang ID 0x92 in LCID is used for Central Kurdish and
     // GetLocaleInfo() maps such LCID to "ku". However, CLDR uses "ku" for
@@ -1068,41 +1068,31 @@ uprv_convertToPosix(uint32_t hostid, char *posixID, int32_t posixIDCapacity, UEr
     if ((hostid & 0x3FF) != 0x92) {
         int32_t tmpLen = 0;
         char16_t windowsLocaleName[LOCALE_NAME_MAX_LENGTH] = {};
-
+#define LOCALE_SNAME                  0x0000005c
         // Note: LOCALE_ALLOW_NEUTRAL_NAMES was enabled in Windows7+, prior versions did not handle neutral (no-region) locale names.
-        tmpLen = LCIDToLocaleName(hostid, (PWSTR)windowsLocaleName, UPRV_LENGTHOF(windowsLocaleName), LOCALE_ALLOW_NEUTRAL_NAMES);
+        tmpLen = GetLocaleInfoA(hostid, LOCALE_SNAME, (LPSTR)locName, UPRV_LENGTHOF(locName));
         if (tmpLen > 1) {
-            int32_t i = 0;
-            // Only need to look up in table if have _, eg for de-de_phoneb type alternate sort.
-            bLookup = false;
-            for (i = 0; i < UPRV_LENGTHOF(locName); i++)
-            {
-                locName[i] = (char)(windowsLocaleName[i]);
-
-                // Windows locale name may contain sorting variant, such as "es-ES_tradnl".
-                // In such cases, we need special mapping data found in the hardcoded table
-                // in this source file.
-                if (windowsLocaleName[i] == L'_')
-                {
-                    // Keep the base locale, without variant
-                    // TODO: Should these be mapped from _phoneb to @collation=phonebook, etc.?
-                    locName[i] = '\0';
-                    tmpLen = i;
-                    bLookup = true;
-                    break;
-                }
-                else if (windowsLocaleName[i] == L'-')
-                {
-                    // Windows names use -, ICU uses _
-                    locName[i] = '_';
-                }
-                else if (windowsLocaleName[i] == L'\0')
-                {
-                    // No point in doing more work than necessary
-                    break;
-                }
+            /* Windows locale name may contain sorting variant, such as "es-ES_tradnl".
+            In such case, we need special mapping data found in the hardcoded table
+            in this source file. */
+            char *p = uprv_strchr(locName, '_');
+            if (p) {
+                /* Keep the base locale, without variant */
+                *p = 0;
+                tmpLen = uprv_strlen(locName);
             }
-            // TODO: Need to understand this better, why isn't it an alias?
+            else {
+                /* No hardcoded table lookup necessary */
+                bLookup = FALSE;
+            }
+            /* Change the tag separator from '-' to '_' */
+            p = locName;
+            while (*p) {
+                if (*p == '-') {
+                    *p = '_';
+                 }
+                p++;
+             }
             FIX_LANGUAGE_ID_TAG(locName, tmpLen);
             pPosixID = locName;
         }
@@ -1129,7 +1119,7 @@ uprv_convertToPosix(uint32_t hostid, char *posixID, int32_t posixIDCapacity, UEr
     }
 
     if (pPosixID) {
-        int32_t resLen = static_cast<int32_t>(uprv_strlen(pPosixID));
+        int32_t resLen = uprv_strlen(pPosixID);
         int32_t copyLen = resLen <= posixIDCapacity ? resLen : posixIDCapacity;
         uprv_memcpy(posixID, pPosixID, copyLen);
         if (resLen < posixIDCapacity) {
@@ -1159,92 +1149,6 @@ uprv_convertToPosix(uint32_t hostid, char *posixID, int32_t posixIDCapacity, UEr
 //
 /////////////////////////////////////
 */
-U_CAPI uint32_t
-uprv_convertToLCIDPlatform(const char* localeID, UErrorCode* status)
-{
-    if (U_FAILURE(*status)) {
-        return 0;
-    }
-
-    // The purpose of this function is to leverage the Windows platform name->lcid
-    // conversion functionality when available.
-#if U_PLATFORM_HAS_WIN32_API && UCONFIG_USE_WINDOWS_LCID_MAPPING_API
-    int32_t len;
-    char baseName[ULOC_FULLNAME_CAPACITY] = {};
-    const char * mylocaleID = localeID;
-
-    // Check any for keywords.
-    if (uprv_strchr(localeID, '@'))
-    {
-        icu::CharString collVal;
-        {
-            icu::CharStringByteSink sink(&collVal);
-            ulocimp_getKeywordValue(localeID, "collation", sink, status);
-        }
-        if (U_SUCCESS(*status) && !collVal.isEmpty())
-        {
-            // If it contains the keyword collation, return 0 so that the LCID lookup table will be used.
-            return 0;
-        }
-        else
-        {
-            // If the locale ID contains keywords other than collation, just use the base name.
-            len = uloc_getBaseName(localeID, baseName, UPRV_LENGTHOF(baseName) - 1, status);
-
-            if (U_SUCCESS(*status) && len > 0)
-            {
-                baseName[len] = 0;
-                mylocaleID = baseName;
-            }
-        }
-    }
-
-    char asciiBCP47Tag[LOCALE_NAME_MAX_LENGTH] = {};
-    // this will change it from de_DE@collation=phonebook to de-DE-u-co-phonebk form
-    (void)uloc_toLanguageTag(mylocaleID, asciiBCP47Tag, UPRV_LENGTHOF(asciiBCP47Tag), false, status);
-
-    if (U_SUCCESS(*status))
-    {
-        // Need it to be UTF-16, not 8-bit
-        wchar_t bcp47Tag[LOCALE_NAME_MAX_LENGTH] = {};
-        int32_t i;
-        for (i = 0; i < UPRV_LENGTHOF(bcp47Tag); i++)
-        {
-            if (asciiBCP47Tag[i] == '\0')
-            {
-                break;
-            }
-            else
-            {
-                // Copy the character
-                bcp47Tag[i] = static_cast<wchar_t>(asciiBCP47Tag[i]);
-            }
-        }
-
-        if (i < (UPRV_LENGTHOF(bcp47Tag) - 1))
-        {
-            // Ensure it's null terminated
-            bcp47Tag[i] = L'\0';
-            LCID lcid = LocaleNameToLCID(bcp47Tag, LOCALE_ALLOW_NEUTRAL_NAMES);
-            if (lcid > 0)
-            {
-                // Found LCID from windows, return that one, unless its completely ambiguous
-                // LOCALE_USER_DEFAULT and transients are OK because they will round trip
-                // for this process.
-                if (lcid != LOCALE_CUSTOM_UNSPECIFIED)
-                {
-                    return lcid;
-                }
-            }
-        }
-    }
-#else
-    (void) localeID; // Suppress unused variable warning.
-#endif
-
-    // Nothing found, or not implemented.
-    return 0;
-}
 
 U_CAPI uint32_t
 uprv_convertToLCID(const char *langID, const char* posixID, UErrorCode* status)

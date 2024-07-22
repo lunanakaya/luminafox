@@ -28,108 +28,10 @@ using namespace mozilla::intl;
 OSPreferences::OSPreferences() {}
 
 bool OSPreferences::ReadSystemLocales(nsTArray<nsCString>& aLocaleList) {
-  MOZ_ASSERT(aLocaleList.IsEmpty());
-
-#ifndef __MINGW32__
-  if (IsWin8OrLater()) {
-    // Try to get language list from GlobalizationPreferences; if this fails,
-    // we'll fall back to GetUserPreferredUILanguages.
-    // Per MSDN, these APIs are not available prior to Win8.
-    ComPtr<IGlobalizationPreferencesStatics> globalizationPrefs;
-    ComPtr<IVectorView<HSTRING>> languages;
-    uint32_t count;
-    if (SUCCEEDED(RoGetActivationFactory(
-            HStringReference(
-                RuntimeClass_Windows_System_UserProfile_GlobalizationPreferences)
-                .Get(),
-            IID_PPV_ARGS(&globalizationPrefs))) &&
-        SUCCEEDED(globalizationPrefs->get_Languages(&languages)) &&
-        SUCCEEDED(languages->get_Size(&count))) {
-      for (uint32_t i = 0; i < count; ++i) {
-        HString lang;
-        if (SUCCEEDED(languages->GetAt(i, lang.GetAddressOf()))) {
-          unsigned int length;
-          const wchar_t* text = lang.GetRawBuffer(&length);
-          NS_LossyConvertUTF16toASCII loc(text, length);
-          if (CanonicalizeLanguageTag(loc)) {
-            if (!loc.Contains('-')) {
-              // DirectWrite font-name code doesn't like to be given a bare
-              // language code with no region subtag, but the
-              // GlobalizationPreferences API may give us one (e.g. "ja").
-              // So if there's no hyphen in the string at this point, we use
-              // AddLikelySubtags to get a suitable region code to
-              // go with it.
-              Locale locale;
-              auto result = LocaleParser::TryParse(loc, locale);
-              if (result.isOk() && locale.AddLikelySubtags().isOk() &&
-                  locale.Region().Present()) {
-                loc.Append('-');
-                loc.Append(locale.Region().Span());
-              }
-            }
-            aLocaleList.AppendElement(loc);
-          }
-        }
-      }
-    }
-  }
-#endif
-
-  // Per MSDN, GetUserPreferredUILanguages is available from Vista onwards,
-  // so we can use it unconditionally (although it may not work well!)
-  if (aLocaleList.IsEmpty()) {
-    // Note that according to the questioner at
-    // https://stackoverflow.com/questions/52849233/getuserpreferreduilanguages-never-returns-more-than-two-languages,
-    // this may not always return the full list of languages we'd expect.
-    // We should always get at least the first-preference lang, though.
-    ULONG numLanguages = 0;
-    DWORD cchLanguagesBuffer = 0;
-    if (!GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &numLanguages, nullptr,
-                                     &cchLanguagesBuffer)) {
-      return false;
-    }
-
-    AutoTArray<WCHAR, 64> locBuffer;
-    locBuffer.SetCapacity(cchLanguagesBuffer);
-    if (!GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &numLanguages,
-                                     locBuffer.Elements(),
-                                     &cchLanguagesBuffer)) {
-      return false;
-    }
-
-    const WCHAR* start = locBuffer.Elements();
-    const WCHAR* bufEnd = start + cchLanguagesBuffer;
-    while (bufEnd - start > 1 && *start) {
-      const WCHAR* end = start + 1;
-      while (bufEnd - end > 1 && *end) {
-        end++;
-      }
-      NS_LossyConvertUTF16toASCII loc(start, end - start);
-      if (CanonicalizeLanguageTag(loc)) {
-        aLocaleList.AppendElement(loc);
-      }
-      start = end + 1;
-    }
-  }
-
-  return !aLocaleList.IsEmpty();
+  return false;
 }
 
 bool OSPreferences::ReadRegionalPrefsLocales(nsTArray<nsCString>& aLocaleList) {
-  MOZ_ASSERT(aLocaleList.IsEmpty());
-
-  WCHAR locale[LOCALE_NAME_MAX_LENGTH];
-  if (NS_WARN_IF(!LCIDToLocaleName(LOCALE_USER_DEFAULT, locale,
-                                   LOCALE_NAME_MAX_LENGTH, 0))) {
-    return false;
-  }
-
-  NS_LossyConvertUTF16toASCII loc(locale);
-
-  if (CanonicalizeLanguageTag(loc)) {
-    aLocaleList.AppendElement(loc);
-    return true;
-  }
   return false;
 }
 
@@ -156,10 +58,10 @@ static LCTYPE ToTimeLCType(OSPreferences::DateTimeFormatStyle aFormatStyle) {
   switch (aFormatStyle) {
     case OSPreferences::DateTimeFormatStyle::None:
       return LOCALE_STIMEFORMAT;
-    case OSPreferences::DateTimeFormatStyle::Short:
+/*    case OSPreferences::DateTimeFormatStyle::Short:
       return LOCALE_SSHORTTIME;
     case OSPreferences::DateTimeFormatStyle::Medium:
-      return LOCALE_SSHORTTIME;
+      return LOCALE_SSHORTTIME;*/
     case OSPreferences::DateTimeFormatStyle::Long:
       return LOCALE_STIMEFORMAT;
     case OSPreferences::DateTimeFormatStyle::Full:
@@ -215,9 +117,7 @@ bool OSPreferences::ReadDateTimePattern(DateTimeFormatStyle aDateStyle,
 
   if (isDate) {
     LCTYPE lcType = ToDateLCType(aDateStyle);
-    size_t len = GetLocaleInfoEx(
-        reinterpret_cast<const wchar_t*>(localeName.BeginReading()), lcType,
-        nullptr, 0);
+    size_t len = 0;
     if (len == 0) {
       return false;
     }
@@ -225,8 +125,6 @@ bool OSPreferences::ReadDateTimePattern(DateTimeFormatStyle aDateStyle,
     // We're doing it to ensure the terminator will fit when Windows writes the
     // data to its output buffer. See bug 1358159 for details.
     str.SetLength(len);
-    GetLocaleInfoEx(reinterpret_cast<const wchar_t*>(localeName.BeginReading()),
-                    lcType, (WCHAR*)str.BeginWriting(), len);
     str.SetLength(len - 1);  // -1 because len counts the null terminator
 
     // Windows uses "ddd" and "dddd" for abbreviated and full day names
@@ -275,9 +173,7 @@ bool OSPreferences::ReadDateTimePattern(DateTimeFormatStyle aDateStyle,
 
   if (isTime) {
     LCTYPE lcType = ToTimeLCType(aTimeStyle);
-    size_t len = GetLocaleInfoEx(
-        reinterpret_cast<const wchar_t*>(localeName.BeginReading()), lcType,
-        nullptr, 0);
+    size_t len = 0;
     if (len == 0) {
       return false;
     }
@@ -285,8 +181,6 @@ bool OSPreferences::ReadDateTimePattern(DateTimeFormatStyle aDateStyle,
     // We're doing it to ensure the terminator will fit when Windows writes the
     // data to its output buffer. See bug 1358159 for details.
     str.SetLength(len);
-    GetLocaleInfoEx(reinterpret_cast<const wchar_t*>(localeName.BeginReading()),
-                    lcType, (WCHAR*)str.BeginWriting(), len);
     str.SetLength(len - 1);
 
     // Windows uses "t" or "tt" for a "time marker" (am/pm indicator),
