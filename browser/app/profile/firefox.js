@@ -35,7 +35,7 @@ pref("extensions.webextOptionalPermissionPrompts", true);
 pref("extensions.postDownloadThirdPartyPrompt", true);
 
 // Preferences for AMO integration
-pref("extensions.getAddons.cache.enabled", true);
+pref("extensions.getAddons.cache.enabled", false);
 pref("extensions.getAddons.get.url", "https://services.addons.mozilla.org/api/v4/addons/search/?guid=%IDS%&lang=%LOCALE%");
 pref("extensions.getAddons.search.browseURL", "https://addons.mozilla.org/%LOCALE%/firefox/search?q=%TERMS%&platform=%OS%&appver=%VERSION%");
 pref("extensions.getAddons.link.url", "https://addons.mozilla.org/%LOCALE%/firefox/");
@@ -65,9 +65,9 @@ pref("extensions.geckoProfiler.acceptedExtensionIds", "geckoprofiler@mozilla.com
 
 pref("extensions.webextensions.remote", true);
 
-// Require signed add-ons by default
-pref("extensions.langpacks.signatures.required", true);
-pref("xpinstall.signatures.required", true);
+// Don't require signed add-ons by default
+pref("extensions.langpacks.signatures.required", false);
+pref("xpinstall.signatures.required", false);
 
 // Dictionary download preference
 pref("browser.dictionaries.download.url", "https://addons.mozilla.org/%LOCALE%/firefox/language-tools/");
@@ -742,12 +742,7 @@ pref("browser.search.separatePrivateDefault.ui.enabled", false);
 // The maximum amount of times the private default banner is shown.
 pref("browser.search.separatePrivateDefault.ui.banner.max", 0);
 
-// Enables search SERP telemetry page categorization.
-#ifdef NIGHTLY_BUILD
-pref("browser.search.serpEventTelemetryCategorization.enabled", true);
-#else
 pref("browser.search.serpEventTelemetryCategorization.enabled", false);
-#endif
 
 // Search Bar removal from the toolbar for users who haven’t used it in 120
 // days
@@ -1566,8 +1561,8 @@ pref("services.sync.prefs.sync.browser.menu.showViewImageInfo", true);
 pref("services.sync.prefs.sync.browser.newtabpage.activity-stream.asrouter.userprefs.cfr.addons", true);
 pref("services.sync.prefs.sync.browser.newtabpage.activity-stream.asrouter.userprefs.cfr.features", true);
 pref("services.sync.prefs.sync.browser.newtabpage.activity-stream.showSearch", true);
-pref("services.sync.prefs.sync.browser.newtabpage.activity-stream.showSponsored", true);
-pref("services.sync.prefs.sync.browser.newtabpage.activity-stream.showSponsoredTopSites", true);
+pref("services.sync.prefs.sync.browser.newtabpage.activity-stream.showSponsored", false);
+pref("services.sync.prefs.sync.browser.newtabpage.activity-stream.showSponsoredTopSites", false);
 pref("services.sync.prefs.sync.browser.newtabpage.activity-stream.feeds.topsites", true);
 pref("services.sync.prefs.sync.browser.newtabpage.activity-stream.topSitesRows", true);
 pref("services.sync.prefs.sync.browser.newtabpage.activity-stream.feeds.section.topstories", true);
@@ -1725,12 +1720,8 @@ pref("browser.newtabpage.activity-stream.weather.display", "simple");
 #endif
 
 // Preference to enable wallpaper selection in the Customize Menu of new tab page
-#ifdef NIGHTLY_BUILD
-  pref("browser.newtabpage.activity-stream.newtabWallpapers.enabled", true);
-#else
-  pref("browser.newtabpage.activity-stream.newtabWallpapers.enabled", false);
-#endif
-pref("browser.newtabpage.activity-stream.newtabWallpapers.v2.enabled", false);
+pref("browser.newtabpage.activity-stream.newtabWallpapers.enabled", true);
+pref("browser.newtabpage.activity-stream.newtabWallpapers.v2.enabled", true);
 
 // Current new tab page background images.
 pref("browser.newtabpage.activity-stream.newtabWallpapers.wallpaper-light", "");
@@ -1852,7 +1843,7 @@ pref("browser.newtabpage.activity-stream.discoverystream.onboardingExperience.di
 pref("browser.newtabpage.activity-stream.discoverystream.onboardingExperience.enabled", false);
 
 // User pref to show stories on newtab (feeds.system.topstories has to be set to true as well)
-pref("browser.newtabpage.activity-stream.feeds.section.topstories", true);
+pref("browser.newtabpage.activity-stream.feeds.section.topstories", false);
 
 // The pref controls if search hand-off is enabled for Activity Stream.
 pref("browser.newtabpage.activity-stream.improvesearch.handoffToAwesomebar", true);
