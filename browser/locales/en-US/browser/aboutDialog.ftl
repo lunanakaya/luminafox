@@ -67,7 +67,7 @@ helpus = Want to help? <label data-l10n-name="helpus-donateLink">Make a donation
 
 bottomLinks-license = Licensing Information
 bottomLinks-rights = End-User Rights
-bottomLinks-privacy = Privacy Policy
+bottomLinks-privacy = Discord Server
 
 # Example of resulting string: 66.0.1 (64-bit)
 # Variables:
