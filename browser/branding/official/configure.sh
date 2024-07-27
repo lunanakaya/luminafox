@@ -8,8 +8,6 @@ MOZ_APP_BASENAME=Luminafox
 
 MOZ_APP_DISPLAYNAME=Luminafox
 
-MOZ_APP_UA_NAME=Luminafox
-
 MOZ_APP_VENDOR="Twilight Software"
 
 MOZ_APP_PROFILE="Twilight Software/Luminafox"
