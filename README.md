@@ -8,3 +8,7 @@ It also has Widevine DRM support and quality of life tweaks such as:
 * Lots of privacy tweaks
 * No more ads on the new tab
 * `about:config` has a more classic feel to it
+## Branches
+- [stable](https://github.com/twilight-software/luminafox/tree/stable) - Hosts the code for the releases based on release Firefox
+- [esr-115](https://github.com/twilight-software/luminafox/tree/esr-115) - Hosts the code for our releases based on the Firefox 115 ESR codebase
+- [esr-128](https://github.com/twilight-software/luminafox/tree/esr-128) - Hosts the code for our releases based on the Firefox 115 ESR codebase
