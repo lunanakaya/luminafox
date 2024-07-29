@@ -1,29 +1,10 @@
 # Luminafox
+Luminafox is a Firefox-based web browser that targets Vista, 7 and 8(.1) support.
 
-Luminafox is a fork of the open source web browser Mozilla Firefox made specifically for Windows Vista, 7, and 8 compatibility. There may be other tweaks, however the goal is to remain as close to stock Firefox as possible.
-
-Limited compatibility with One Core API on Windows XP is offered at the current time, however this is not tested consistently. Any issues that may arise that are hard to diagnose may be left to the extended kernel provider to fix.
-
-# Original repository readme
-
-An explanation of the Firefox Source Code Directory Structure and links to
-project pages with documentation can be found at:
-
-    https://firefox-source-docs.mozilla.org/contributing/directory_structure.html
-
-For information on how to build Firefox from the source code and create the patch see:
-
-    https://firefox-source-docs.mozilla.org/contributing/contribution_quickref.html
-
-If you have a question about developing Firefox, and can't find the solution
-on https://firefox-source-docs.mozilla.org/, you can try asking your question on Matrix at chat.mozilla.org in `Introduction` (https://chat.mozilla.org/#/room/#introduction:mozilla.org) channel.
-
-
-Nightly development builds can be downloaded from:
-
-    https://archive.mozilla.org/pub/firefox/nightly/latest-mozilla-central/
-            - or -
-    https://www.mozilla.org/firefox/channel/desktop/#nightly
-
-Keep in mind that nightly builds, which are used by Firefox developers for
-testing, may be buggy.
+It also has Widevine DRM support and quality of life tweaks such as:
+* Native titlebars, even on 10 and 11
+* ephemeralViolette's Native controls patch is built into the browser
+* The hidden new tab wallpaper feature is enabled
+* Lots of privacy tweaks
+* No more ads on the new tab
+* `about:config` has a more classic feel to it
