@@ -1,6 +1,6 @@
 # Luminafox
 
-> {!IMPORTANT]
+> [!IMPORTANT]
 > Luminafox has been discontinued in favor of Snowfox, its upcoming successor.
 
 Luminafox is a Firefox-based web browser that targets Vista, 7 and 8(.1) support.
